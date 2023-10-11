@@ -6,6 +6,7 @@ use tera::Tera;
 use crate::{discovery::Discovered, error::Error, tools};
 use std::{collections::HashMap, fs::File, io::Write, path::PathBuf, process::Command};
 
+use super::jsonschema::types::Model;
 use super::openapi::Openapi;
 use inflector::Inflector;
 
@@ -17,6 +18,7 @@ pub struct Templates {
 #[derive(Debug)]
 pub enum Template {
     Models(ModelsTemplate),
+    Model(ModelTemplate),
     Endpoints(EndpointsTemplate),
     Tags(TagsTemplate),
     Static(StaticTemplate),
@@ -42,6 +44,13 @@ pub struct TagsTemplate {
 
 #[derive(Debug)]
 pub struct ModelsTemplate {
+    relative: PathBuf,
+    filename: Filename,
+    condition: Option<Condition>,
+}
+
+#[derive(Debug)]
+pub struct ModelTemplate {
     relative: PathBuf,
     filename: Filename,
     condition: Option<Condition>,
@@ -258,6 +267,7 @@ impl Template {
                 .map(|type_| match type_ {
                     "endpoints" => EndpointsTemplate::from(PathBuf::from(relative), &params),
                     "models" => ModelsTemplate::from(PathBuf::from(relative), &params),
+                    "model" => ModelTemplate::from(PathBuf::from(relative), &params),
                     "tags" => TagsTemplate::from(PathBuf::from(relative), &params),
                     "static" => StaticTemplate::from(PathBuf::from(relative), &params),
                     _ => Err(Error::CodegenFileHeaderRequired("type".to_string())),
@@ -571,6 +581,65 @@ impl ModelsTemplate {
     }
 }
 
+impl ModelTemplate {
+    pub fn from(relative: PathBuf, config: &HashMap<&str, Value>) -> Result<Template, Error> {
+        let filename = Filename::from(
+            config
+                .get("filename")
+                .ok_or_else(|| Error::CodegenFileHeaderRequired("filename".to_string()))?
+                .as_str()
+                .unwrap()
+                .to_string(),
+        );
+
+        let condition = config
+            .get("if")
+            .map(|s| Condition::from(s.as_str().unwrap()))
+            .map_or(Ok(None), |v| v.map(Some))?;
+
+        Ok(Template::Model(Self {
+            relative,
+            filename,
+            condition,
+        }))
+    }
+
+    pub fn render(
+        &self,
+        tera: &Tera,
+        target_dir: &str,
+        model: &Model,
+        container: &super::CodegenContainer,
+    ) -> Result<Vec<String>, Error> {
+        if self
+            .condition
+            .as_ref()
+            .map(|s| s.check(container))
+            .unwrap_or(true)
+        {
+
+            let result = process_render(
+                tera,
+            model,
+                PathBuf::from(format!(
+                    "{}/{}",
+                    target_dir,
+                    self.filename.resolve(container)?
+                )),
+                self.relative.clone(),
+                container,
+            );
+
+            log::warn!("result:{:?}", result);
+            return result;
+        } else {
+            log::info!("Template skipped due to condition: {:?}", self.relative);
+
+            Ok(vec![])
+        }
+    }
+}
+
 impl FileTemplate {
     pub fn copy(&self, target_dir: &str) -> Result<Vec<String>, Error> {
         let target = PathBuf::from(format!("{}/{}", target_dir, self.relative));
@@ -628,6 +697,8 @@ fn process_render(
     relative: PathBuf,
     container: &super::CodegenContainer,
 ) -> Result<Vec<String>, Error> {
+    log::info!("target:{:?} ", target);
+
     let mut ctx = Context::from_serialize(serde_json::to_value(data).unwrap()).unwrap();
 
     let data = serde_json::to_value(container).unwrap();

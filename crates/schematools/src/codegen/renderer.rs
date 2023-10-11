@@ -95,6 +95,24 @@ impl Renderer {
                 super::templates::Template::Models(t) => {
                     t.render(&self.tera, target_dir, &openapi.models, &self.container)
                 }
+
+                super::templates::Template::Model(t) => {
+
+                    let results:Vec<Result<Vec<String>,Error>> = openapi.models.models.iter().map(|model | {
+
+                        let mut containerClone = self.container.clone();
+                        containerClone.data.insert("model".to_string(),serde_json::to_value(model).unwrap());
+                        return t.render(&self.tera, target_dir, &model, &containerClone);
+                    }).collect();
+
+                    results
+                    .into_iter()
+                    .collect::<Result<Vec<Vec<String>>, Error>>()
+                    .map(|vec_of_strings| vec_of_strings.into_iter().flatten().collect())        
+                }
+
+        
+        
             }?);
         }
 

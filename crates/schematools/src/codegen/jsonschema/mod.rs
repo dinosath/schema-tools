@@ -26,7 +26,7 @@ use crate::{
 pub struct ModelContainer {
     regexps: Vec<types::RegexpType>,
     formats: Vec<String>,
-    models: Vec<types::Model>,
+    pub models: Vec<types::Model>,
     mapping: HashMap<String, u32>,
     any: types::Model,
 }
