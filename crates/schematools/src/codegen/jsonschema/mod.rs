@@ -79,10 +79,10 @@ impl ModelContainer {
             let model = self.models.get(id).unwrap();
             (Some(id as u32), model)
         } else {
-            let name = model.name().unwrap();
+            let name = model.name.clone();
 
-            if self.models.iter().any(|c| c.name().unwrap() == name) {
-                let new_name = tools::bump_suffix_number(name);
+            if self.models.iter().any(|c| c.name == name) {
+                let new_name = tools::bump_suffix_number(&name);
                 log::warn!(
                     "{}: absolute: {}, conflict, renaming to: {}",
                     scope,

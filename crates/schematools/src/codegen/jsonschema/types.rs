@@ -14,6 +14,7 @@ pub struct Model {
 
     #[serde(flatten)]
     pub spaces: SpacesContainer,
+    pub name: String
 }
 
 impl PartialEq for Model {
@@ -24,10 +25,13 @@ impl PartialEq for Model {
 
 impl Model {
     pub fn new(inner: ModelType) -> Self {
+        let name = Self::name(&inner).unwrap_or("").to_string(); 
+
         Self {
             inner,
             attributes: Attributes::default(),
             spaces: SpacesContainer::default(),
+            name
         }
     }
 
@@ -43,7 +47,147 @@ impl Model {
     pub fn mut_inner(&mut self) -> &mut ModelType {
         &mut self.inner
     }
+
+    pub fn children(&self, container: &ModelContainer) -> Vec<u32> {
+        let children = match self.inner() {
+            ModelType::ArrayType(a) => {
+                vec![a.model.original]
+            }
+            ModelType::MapType(s) => {
+                vec![s.model.original]
+            }
+            ModelType::ObjectType(o) => o.properties.iter().map(|p| p.original).collect(),
+            ModelType::WrapperType(w) => w.models.iter().map(|p| p.original).collect(),
+            ModelType::NullableOptionalWrapperType(s) => {
+                vec![s.model.original]
+            }
+            _ => vec![],
+        };
+
+        let mut ids = children.iter().cloned().flatten().collect::<Vec<_>>();
+        let mut additional: Vec<u32> = vec![];
+        for id in ids.iter() {
+            additional.append(
+                &mut container
+                    .models
+                    .get(*id as usize)
+                    .unwrap()
+                    .children(container),
+            );
+        }
+
+        ids.append(&mut additional);
+        ids
+    }
+
+    pub fn flatten(
+        &self,
+        container: &mut ModelContainer,
+        scope: &mut SchemaScope,
+    ) -> Result<FlatModel, Error> {
+        match self.inner() {
+            ModelType::ArrayType(a) => a.flatten(self),
+            ModelType::PrimitiveType(p) => p.flatten(self),
+            ModelType::AnyType(a) => a.flatten(self),
+            ModelType::MapType(s) => s.flatten(self),
+            ModelType::ObjectType(o) => o.flatten(container.add(scope, self.clone())),
+            ModelType::EnumType(e) => e.flatten(container.add(scope, self.clone())),
+            ModelType::ConstType(c) => c.flatten(container.add(scope, self.clone())),
+            ModelType::WrapperType(w) => w.flatten(container.add(scope, self.clone())),
+            ModelType::NullableOptionalWrapperType(s) => {
+                s.flatten(container.add(scope, self.clone()))
+            }
+            ModelType::FlatModel(f) => Ok(f.clone()),
+        }
+        .map(|mut s| {
+            s.spaces = self.spaces.clone();
+            s.customize_attributes(&self.attributes)
+        })
+    }
+
+    pub fn add_spaces(&mut self, scope: &mut SchemaScope) {
+        let spaces = scope.get_spaces();
+
+        if !spaces.is_empty() {
+            self.spaces.add(spaces);
+        }
+    }
+
+    pub fn name(inner: &ModelType) -> Result<&str, Error> {
+        match inner {
+            ModelType::ObjectType(o) => Ok(&o.name),
+            ModelType::EnumType(e) => Ok(&e.name),
+            ModelType::ConstType(c) => Ok(&c.name),
+            ModelType::WrapperType(w) => Ok(&w.name),
+            ModelType::NullableOptionalWrapperType(s) => Ok(&s.name),
+            ModelType::PrimitiveType(p) => {
+                if let Some(s) = &p.name {
+                    Ok(s)
+                } else {
+                    Err(Error::CodegenCannotNameModelError(format!(
+                        "primitive: {p:?}"
+                    )))
+                }
+            }
+            ModelType::ArrayType(p) => {
+                if let Some(s) = &p.name {
+                    Ok(s)
+                } else {
+                    Err(Error::CodegenCannotNameModelError(format!(
+                        "array: {p:?}"
+                    )))
+                }
+            }
+            ModelType::MapType(p) => {
+                if let Some(s) = &p.name {
+                    Ok(s)
+                } else {
+                    Err(Error::CodegenCannotNameModelError(format!("map: {p:?}")))
+                }
+            }
+            _ => Err(Error::CodegenCannotNameModelError(format!(
+                "unknown: {inner:?}"
+            ))),
+        }
+    }
+
+    pub fn rename(self, name: String) -> Model {
+        // todo: all models could have name ...
+        Model::new(match self.inner {
+            ModelType::ObjectType(mut o) => {
+                o.name = name;
+                ModelType::ObjectType(o)
+            }
+            ModelType::EnumType(mut e) => {
+                e.name = name;
+                ModelType::EnumType(e)
+            }
+            ModelType::ConstType(mut c) => {
+                c.name = name;
+                ModelType::ConstType(c)
+            }
+            ModelType::WrapperType(mut w) => {
+                w.name = name;
+                ModelType::WrapperType(w)
+            }
+            ModelType::NullableOptionalWrapperType(mut s) => {
+                s.name = name;
+                ModelType::NullableOptionalWrapperType(s)
+            }
+            ModelType::PrimitiveType(mut p) => {
+                p.name = Some(name);
+                ModelType::PrimitiveType(p)
+            }
+            ModelType::ArrayType(mut p) => {
+                p.name = Some(name);
+                ModelType::ArrayType(p)
+            }
+            _ => panic!("Unsupported rename: {}", name),
+        })
+    }
 }
+
+
 
 #[derive(Debug, Serialize, Clone, Eq, PartialEq)]
 pub enum ModelType {
@@ -263,146 +407,6 @@ pub struct Attributes {
 
     #[serde(rename = "x")]
     pub x: std::collections::HashMap<String, Value>,
-}
-
-impl Model {
-    pub fn children(&self, container: &ModelContainer) -> Vec<u32> {
-        let children = match self.inner() {
-            ModelType::ArrayType(a) => {
-                vec![a.model.original]
-            }
-            ModelType::MapType(s) => {
-                vec![s.model.original]
-            }
-            ModelType::ObjectType(o) => o.properties.iter().map(|p| p.original).collect(),
-            ModelType::WrapperType(w) => w.models.iter().map(|p| p.original).collect(),
-            ModelType::NullableOptionalWrapperType(s) => {
-                vec![s.model.original]
-            }
-            _ => vec![],
-        };
-
-        let mut ids = children.iter().cloned().flatten().collect::<Vec<_>>();
-        let mut additional: Vec<u32> = vec![];
-        for id in ids.iter() {
-            additional.append(
-                &mut container
-                    .models
-                    .get(*id as usize)
-                    .unwrap()
-                    .children(container),
-            );
-        }
-
-        ids.append(&mut additional);
-        ids
-    }
-
-    pub fn flatten(
-        &self,
-        container: &mut ModelContainer,
-        scope: &mut SchemaScope,
-    ) -> Result<FlatModel, Error> {
-        match self.inner() {
-            ModelType::ArrayType(a) => a.flatten(self),
-            ModelType::PrimitiveType(p) => p.flatten(self),
-            ModelType::AnyType(a) => a.flatten(self),
-            ModelType::MapType(s) => s.flatten(self),
-            ModelType::ObjectType(o) => o.flatten(container.add(scope, self.clone())),
-            ModelType::EnumType(e) => e.flatten(container.add(scope, self.clone())),
-            ModelType::ConstType(c) => c.flatten(container.add(scope, self.clone())),
-            ModelType::WrapperType(w) => w.flatten(container.add(scope, self.clone())),
-            ModelType::NullableOptionalWrapperType(s) => {
-                s.flatten(container.add(scope, self.clone()))
-            }
-            ModelType::FlatModel(f) => Ok(f.clone()),
-        }
-        .map(|mut s| {
-            s.spaces = self.spaces.clone();
-            s.customize_attributes(&self.attributes)
-        })
-    }
-
-    pub fn add_spaces(&mut self, scope: &mut SchemaScope) {
-        let spaces = scope.get_spaces();
-
-        if !spaces.is_empty() {
-            self.spaces.add(spaces);
-        }
-    }
-
-    pub fn name(&self) -> Result<&str, Error> {
-        match self.inner() {
-            ModelType::ObjectType(o) => Ok(&o.name),
-            ModelType::EnumType(e) => Ok(&e.name),
-            ModelType::ConstType(c) => Ok(&c.name),
-            ModelType::WrapperType(w) => Ok(&w.name),
-            ModelType::NullableOptionalWrapperType(s) => Ok(&s.name),
-            ModelType::PrimitiveType(p) => {
-                if let Some(s) = &p.name {
-                    Ok(s)
-                } else {
-                    Err(Error::CodegenCannotNameModelError(format!(
-                        "primitive: {self:?}"
-                    )))
-                }
-            }
-            ModelType::ArrayType(p) => {
-                if let Some(s) = &p.name {
-                    Ok(s)
-                } else {
-                    Err(Error::CodegenCannotNameModelError(format!(
-                        "array: {self:?}"
-                    )))
-                }
-            }
-            ModelType::MapType(p) => {
-                if let Some(s) = &p.name {
-                    Ok(s)
-                } else {
-                    Err(Error::CodegenCannotNameModelError(format!("map: {self:?}")))
-                }
-            }
-            _ => Err(Error::CodegenCannotNameModelError(format!(
-                "unknown: {self:?}"
-            ))),
-        }
-    }
-
-    pub fn rename(self, name: String) -> Model {
-        // todo: all models could have name ...
-        Model::new(match self.inner {
-            ModelType::ObjectType(mut o) => {
-                o.name = name;
-                ModelType::ObjectType(o)
-            }
-            ModelType::EnumType(mut e) => {
-                e.name = name;
-                ModelType::EnumType(e)
-            }
-            ModelType::ConstType(mut c) => {
-                c.name = name;
-                ModelType::ConstType(c)
-            }
-            ModelType::WrapperType(mut w) => {
-                w.name = name;
-                ModelType::WrapperType(w)
-            }
-            ModelType::NullableOptionalWrapperType(mut s) => {
-                s.name = name;
-                ModelType::NullableOptionalWrapperType(s)
-            }
-            ModelType::PrimitiveType(mut p) => {
-                p.name = Some(name);
-                ModelType::PrimitiveType(p)
-            }
-            ModelType::ArrayType(mut p) => {
-                p.name = Some(name);
-                ModelType::ArrayType(p)
-            }
-            _ => panic!("Unsupported rename: {}", name),
-        })
-    }
 }
 
 impl Serialize for FlatModel {

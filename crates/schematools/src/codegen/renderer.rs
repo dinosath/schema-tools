@@ -1,4 +1,4 @@
-use crate::{discovery::Discovered, error::Error};
+use crate::{discovery::Discovered, error::Error, process::name::endpoint};
 use tera::Tera;
 
 pub struct Renderer {
@@ -22,9 +22,11 @@ pub fn create(
     super::filters::register(&mut tera);
 
     let templates = super::templates::get(discovered)?;
-    if !templates.includes(required) {
-        return Err(Error::CodegenMissingRequiredTemplates);
-    }
+
+    //TODO: rempove required templates
+    // if !templates.includes(required) {
+    //     return Err(Error::CodegenMissingRequiredTemplates);
+    // }
 
     Ok(Renderer {
         tera,
@@ -99,10 +101,23 @@ impl Renderer {
                 super::templates::Template::Model(t) => {
 
                     let results:Vec<Result<Vec<String>,Error>> = openapi.models.models.iter().map(|model | {
-
                         let mut containerClone = self.container.clone();
                         containerClone.data.insert("model".to_string(),serde_json::to_value(model).unwrap());
                         return t.render(&self.tera, target_dir, &model, &containerClone);
+                    }).collect();
+
+                    results
+                    .into_iter()
+                    .collect::<Result<Vec<Vec<String>>, Error>>()
+                    .map(|vec_of_strings| vec_of_strings.into_iter().flatten().collect())        
+                }
+
+                super::templates::Template::Endpoint(t) => {
+
+                    let results:Vec<Result<Vec<String>,Error>> = openapi.endpoints.iter().map(|endpoint | {
+                        let mut containerClone = self.container.clone();
+                        containerClone.data.insert("endpoint".to_string(),serde_json::to_value(endpoint).unwrap());
+                        return t.render(&self.tera, target_dir, &openapi, &containerClone);
                     }).collect();
 
                     results

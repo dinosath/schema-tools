@@ -207,16 +207,19 @@ pub fn fill_parameters(phrase: &str, data: (impl Serialize + Clone)) -> Result<S
 
             if !current.is_empty() {
                 let path = format!("/{}", current.replace('.', "/"));
-
                 if let Some(value) = serde_json::json!(data).pointer(&path) {
                     result.push_str(&match value {
-                        Value::String(s) => Ok(s.clone()),
+                        Value::String(s) => {
+                            let value = format!("/{}", s.replace('.', "/"));
+                            Ok(value.clone())
+                        },
                         Value::Number(n) => Ok(n.to_string()),
                         _ => Err(Error::CannotFillParameters(path)),
                     }?);
 
                     current.clear();
                 } else {
+                    log::error!("Could not find path:{:?} in data:{:?}", path,serde_json::to_string(&data));
                     return Err(Error::CannotFillParameters(path));
                 }
             }

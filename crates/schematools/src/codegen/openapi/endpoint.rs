@@ -18,6 +18,7 @@ use super::{
 pub struct Endpoint {
     security: Vec<security::SecurityScheme>,
     path: String,
+    path_without_slash: String,
     method: String,
     operation: String,
     description: Option<String>,
@@ -157,12 +158,15 @@ fn new_endpoint(
                 endpoint_parameters.merge(shared)
             }
 
+            let path_without_slash = path.replace("/", "_");
+
             let endpoint = Endpoint {
                 security,
                 description,
                 operation,
                 method: method.to_string(),
                 path: path.to_string(),
+                path_without_slash: path_without_slash.to_string(),
                 tags,
                 responses: responses::extract(data, scope, mcontainer, resolver, options)?,
                 requestbody: requestbody::extract(data, scope, mcontainer, resolver, options)?,

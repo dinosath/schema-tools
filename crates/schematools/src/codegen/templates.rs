@@ -3,11 +3,13 @@ use serde_json::Value;
 use tera::Context;
 use tera::Tera;
 
+use crate::process::name::endpoint;
 use crate::{discovery::Discovered, error::Error, tools};
 use std::{collections::HashMap, fs::File, io::Write, path::PathBuf, process::Command};
 
 use super::jsonschema::types::Model;
 use super::openapi::Openapi;
+use super::openapi::endpoint::Endpoint;
 use inflector::Inflector;
 
 #[derive(Debug)]
@@ -19,6 +21,7 @@ pub struct Templates {
 pub enum Template {
     Models(ModelsTemplate),
     Model(ModelTemplate),
+    Endpoint(EndpointTemplate),
     Endpoints(EndpointsTemplate),
     Tags(TagsTemplate),
     Static(StaticTemplate),
@@ -27,6 +30,15 @@ pub enum Template {
 
 #[derive(Debug)]
 pub struct EndpointsTemplate {
+    relative: PathBuf,
+    filename: Filename,
+    content_type: String,
+    condition: Option<Condition>,
+    group_by: GroupBy,
+}
+
+#[derive(Debug)]
+pub struct EndpointTemplate {
     relative: PathBuf,
     filename: Filename,
     content_type: String,
@@ -265,6 +277,7 @@ impl Template {
                 .ok_or_else(|| Error::CodegenFileHeaderRequired("type".to_string()))?
                 .as_str()
                 .map(|type_| match type_ {
+                    "endpoint" => EndpointTemplate::from(PathBuf::from(relative), &params),
                     "endpoints" => EndpointsTemplate::from(PathBuf::from(relative), &params),
                     "models" => ModelsTemplate::from(PathBuf::from(relative), &params),
                     "model" => ModelTemplate::from(PathBuf::from(relative), &params),
@@ -354,6 +367,89 @@ impl StaticTemplate {
 
             Ok(vec![])
         }
+    }
+}
+
+impl EndpointTemplate {
+    pub fn from(relative: PathBuf, config: &HashMap<&str, Value>) -> Result<Template, Error> {
+        let filename = Filename::from(
+            config
+                .get("filename")
+                .ok_or_else(|| Error::CodegenFileHeaderRequired("filename".to_string()))?
+                .as_str()
+                .unwrap()
+                .to_string(),
+        );
+
+        let content_type = config
+            .get("content_type")
+            .map(|s| s.as_str().unwrap().to_string())
+            .unwrap_or_else(|| "application/json".to_string());
+
+        let condition = config
+            .get("if")
+            .map(|s| Condition::from(s.as_str().unwrap()))
+            .map_or(Ok(None), |v| v.map(Some))?;
+
+        let group_by = config
+            .get("group_by")
+            .map(|s| GroupBy::from(s.as_str().unwrap()))
+            .unwrap_or_else(|| Ok(GroupBy::default()))?;
+
+        Ok(Template::Endpoint(Self {
+            relative,
+            filename,
+            content_type,
+            condition,
+            group_by,
+        }))
+    }
+
+    pub fn render(
+        &self,
+        tera: &Tera,
+        target_dir: &str,
+        openapi: &super::openapi::Openapi,
+        container: &super::CodegenContainer,
+    ) -> Result<Vec<String>, Error> {
+        let mut result = vec![];
+
+        for endpoint in &openapi.endpoints {
+            log::info!("endpoint: {:?}", serde_json::to_string(&endpoint));
+
+            // prepare per group structures
+            let mut openapi = openapi.clone().set_content_type(&self.content_type);
+            let mut container = container.clone();
+
+            container.data.insert(
+                "endpoint".to_string(),
+                serde_json::to_value(endpoint).unwrap(),
+            );  
+
+            if self
+                .condition
+                .as_ref()
+                .map(|s| s.check(&container))
+                .unwrap_or(true)
+            {
+                // render
+                result.append(&mut process_render(
+                    tera,
+                    openapi,
+                    PathBuf::from(format!(
+                        "{}/{}",
+                        target_dir,
+                        self.filename.resolve(&container)?
+                    )),
+                    self.relative.clone(),
+                    &container,
+                )?)
+            } else {
+                log::info!("Template skipped due to condition: {:?}", self.relative);
+            }
+        }
+
+        Ok(result)
     }
 }
 
@@ -630,7 +726,6 @@ impl ModelTemplate {
                 container,
             );
 
-            log::warn!("result:{:?}", result);
             return result;
         } else {
             log::info!("Template skipped due to condition: {:?}", self.relative);
@@ -697,7 +792,6 @@ fn process_render(
     relative: PathBuf,
     container: &super::CodegenContainer,
 ) -> Result<Vec<String>, Error> {
-    log::info!("target:{:?} ", target);
 
     let mut ctx = Context::from_serialize(serde_json::to_value(data).unwrap()).unwrap();
 
